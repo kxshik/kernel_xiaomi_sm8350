@@ -1,0 +1,23 @@
+{
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  },
+  "build": {
+    "kernel_name": "kryptonite",
+    "device_name": "vili",
+    "builder_user": "batman",
+    "builder_host": "darkknight",
+    "configs": [
+      "vendor/lahaina-qgki_defconfig",
+      "vendor/debugfs.config",
+      "vendor/xiaomi_QGKI.config",
+      "vendor/vili_QGKI.config"
+    ],
+    "anykernel3": {
+      "use_anykernel3": true,
+      "repo": "https://github.com/aospa-vili/AnyKernel3",
+      "branch": "master"
+    }
+  }
+}

@@ -1,0 +1,425 @@
+name: Build Kernel & Telegram Upload
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_status_message:
+        description: 'Send start notification to Telegram'
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches:
+      - lineage-24.0-bakasu
+      - lineage-24.0
+      - main
+      - master
+    paths-ignore:
+      - 'README.md'
+      - '.github/workflows/**'
+      - 'telegram_config.json'
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 25
+          submodules: recursive
+
+      - name: Ensure Submodules are Initialized
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Setup Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            gcc \
+            git \
+            jq \
+            libelf-dev \
+            libssl-dev \
+            lz4 \
+            make \
+            python3 \
+            tar \
+            xz-utils \
+            zip \
+            zstd \
+            file \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi
+
+      - name: Parse Configuration
+        id: parse_config
+        run: |
+          CONFIG_FILE="telegram_config.json"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: $CONFIG_FILE not found!"
+            exit 1
+          fi
+
+          # Read Telegram tokens from JSON or fallback to GitHub Secrets
+          TG_TOKEN=$(jq -r '.telegram.bot_token // empty' $CONFIG_FILE)
+          TG_CHAT=$(jq -r '.telegram.chat_id // empty' $CONFIG_FILE)
+
+          if [ -z "$TG_TOKEN" ] || [ "$TG_TOKEN" = "YOUR_TELEGRAM_BOT_TOKEN" ]; then
+            TG_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          fi
+
+          if [ -z "$TG_CHAT" ] || [ "$TG_CHAT" = "YOUR_TELEGRAM_CHAT_ID" ]; then
+            TG_CHAT="${{ secrets.TELEGRAM_CHAT_ID }}"
+          fi
+
+          KERNEL_NAME=$(jq -r '.build.kernel_name // "SM8350-Kernel"' $CONFIG_FILE)
+          DEVICE_NAME=$(jq -r '.build.device_name // "SM8350"' $CONFIG_FILE)
+          BUILD_USER=$(jq -r '.build.builder_user // "batman"' $CONFIG_FILE)
+          BUILD_HOST=$(jq -r '.build.builder_host // "darkknight"' $CONFIG_FILE)
+          USE_AK3=$(jq -r '.build.anykernel3.use_anykernel3 // true' $CONFIG_FILE)
+          AK3_REPO=$(jq -r '.build.anykernel3.repo // "https://github.com/osm0sis/AnyKernel3"' $CONFIG_FILE)
+          AK3_BRANCH=$(jq -r '.build.anykernel3.branch // "master"' $CONFIG_FILE)
+
+          echo "TG_TOKEN=$TG_TOKEN" >> $GITHUB_ENV
+          echo "TG_CHAT=$TG_CHAT" >> $GITHUB_ENV
+          echo "KERNEL_NAME=$KERNEL_NAME" >> $GITHUB_ENV
+          echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_USER=$BUILD_USER" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=$BUILD_HOST" >> $GITHUB_ENV
+          echo "USE_AK3=$USE_AK3" >> $GITHUB_ENV
+          echo "AK3_REPO=$AK3_REPO" >> $GITHUB_ENV
+          echo "AK3_BRANCH=$AK3_BRANCH" >> $GITHUB_ENV
+
+          # Store masked token so GitHub Actions masks it in logs
+          if [ -n "$TG_TOKEN" ]; then
+            echo "::add-mask::$TG_TOKEN"
+          fi
+
+      - name: Download ZyCromerZ Clang
+        run: |
+          mkdir -p clang
+          CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261022-release/Clang-14.0.6-20261022.tar.gz"
+          echo "Downloading Clang from: $CLANG_URL"
+          curl -LSs "$CLANG_URL" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C clang
+          rm -f clang.tar.gz
+
+          if [ -d "clang/bin" ]; then
+            CLANG_DIR="$GITHUB_WORKSPACE/clang"
+          else
+            CLANG_DIR=$(find "$GITHUB_WORKSPACE/clang" -name "bin" -type d | head -n 1 | sed 's#/bin$##')
+          fi
+
+          echo "Clang directory: $CLANG_DIR"
+          echo "$CLANG_DIR/bin" >> $GITHUB_PATH
+          echo "CLANG_DIR=$CLANG_DIR" >> $GITHUB_ENV
+
+      - name: Check Compiler Version & Git Info
+        run: |
+          CLANG_FULL=$("${CLANG_DIR}/bin/clang" --version 2>/dev/null)
+          CLANG_VERSION=$(echo "$CLANG_FULL" | head -n 1)
+          echo "CLANG_VERSION=$CLANG_VERSION" >> $GITHUB_ENV
+
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+          echo "COMMIT_MSG=$COMMIT_MSG" >> $GITHUB_ENV
+          echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+          BUILD_START_TIME=$(date +%s)
+          echo "BUILD_START_TIME=$BUILD_START_TIME" >> $GITHUB_ENV
+
+      - name: Send Telegram Start Notification
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.send_status_message != 'false' }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ] || [ "$TG_TOKEN" = "YOUR_TELEGRAM_BOT_TOKEN" ]; then
+            echo "Telegram token or chat_id not configured. Skipping start message."
+            exit 0
+          fi
+
+          TEXT="🚀 <b>Kernel Build Triggered!</b>"$'\n'$'\n'
+          TEXT+="⚡ <b>Kernel:</b> <code>${KERNEL_NAME}</code>"$'\n'
+          TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
+          TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
+          TEXT+="🦇 <b>Host:</b> <code>${KBUILD_BUILD_USER}@${KBUILD_BUILD_HOST}</code>"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${COMMIT_MSG})"$'\n'
+          TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
+          TEXT+="🛠️ <b>Compiler:</b> <code>${CLANG_VERSION}</code>"$'\n'
+          TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run</a>"
+
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --form-string "chat_id=${TG_CHAT}" \
+            --form-string "parse_mode=HTML" \
+            --form-string "disable_web_page_preview=true" \
+            --form-string "text=${TEXT}")
+
+          MSG_ID=$(echo "$RESPONSE" | jq -r '.result.message_id // empty')
+          if [ -n "$MSG_ID" ]; then
+            echo "BUILD_MSG_ID=$MSG_ID" >> $GITHUB_ENV
+            echo "Captured Telegram message_id: $MSG_ID"
+          fi
+
+      - name: Build Kernel
+        run: |
+          set -e
+          mkdir -p out
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
+          export STRIP=llvm-strip
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export LLVM=1
+          export LLVM_IAS=1
+          export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-batman}"
+          export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-darkknight}"
+          export LOCALVERSION=""
+
+          CONFIGS=$(jq -r '.build.configs[]' telegram_config.json)
+          echo "Config sequence:"
+          echo "$CONFIGS"
+
+          FIRST=1
+          for CFG in $CONFIGS; do
+            echo "===> Applying config: $CFG"
+            make -j$(nproc --all) O=out ARCH=arm64 \
+              CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
+              CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \
+              KBUILD_BUILD_USER="$KBUILD_BUILD_USER" KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST" \
+              LOCALVERSION="" "$CFG"
+          done
+
+          echo "===> Starting Kernel Compilation..."
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \
+            KBUILD_BUILD_USER="$KBUILD_BUILD_USER" KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST" \
+            LOCALVERSION="" \
+            Image dtbs 2>&1 | tee build.log
+
+      - name: Package Kernel
+        if: success()
+        run: |
+          if [ ! -f "out/arch/arm64/boot/Image" ]; then
+            echo "ERROR: out/arch/arm64/boot/Image not found!"
+            exit 1
+          fi
+
+          BUILD_DATE=$(date +%Y%m%d-%H%M)
+          ZIP_NAME="${KERNEL_NAME}-${DEVICE_NAME}-${BUILD_DATE}.zip"
+
+          if [ "$USE_AK3" = "true" ]; then
+            echo "Packaging with AnyKernel3 ($AK3_REPO - $AK3_BRANCH)..."
+            git clone --depth=1 "$AK3_REPO" -b "$AK3_BRANCH" AnyKernel3
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
+
+            # Concatenate DTBs if they exist
+            if [ -d "out/arch/arm64/boot/dts/vendor/qcom" ]; then
+              find out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cat {} + > AnyKernel3/dtb 2>/dev/null || true
+            fi
+
+            # Disable strict device check and update banner
+            if [ -f "AnyKernel3/anykernel.sh" ]; then
+              sed -i -E 's/do\.device\.?check=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+              sed -i "s/kernel.string=.*/kernel.string=${KERNEL_NAME} for ${DEVICE_NAME}/g" AnyKernel3/anykernel.sh
+            fi
+
+            cd AnyKernel3
+            zip -r9 "../${ZIP_NAME}" * -x .git* README.md *placeholder
+            cd ..
+            FINAL_ARTIFACT="${ZIP_NAME}"
+          else
+            FINAL_ARTIFACT="out/arch/arm64/boot/Image"
+          fi
+
+          MD5_SUM=$(md5sum "$FINAL_ARTIFACT" | cut -d' ' -f1)
+          FILE_SIZE=$(ls -lh "$FINAL_ARTIFACT" | awk '{print $5}')
+
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          echo "FINAL_ARTIFACT=$FINAL_ARTIFACT" >> $GITHUB_ENV
+          echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
+          echo "FILE_SIZE=$FILE_SIZE" >> $GITHUB_ENV
+
+          # Generate emojified changelog for GitHub Release
+          python3 .github/scripts/generate_release_changelog.py
+
+      - name: Upload Kernel to Telegram
+        if: success()
+        run: |
+          set -e
+
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ] || [ "$TG_TOKEN" = "YOUR_TELEGRAM_BOT_TOKEN" ]; then
+              echo "Telegram token or chat ID not configured. Skipping Telegram upload."
+              exit 0
+          fi
+
+          if [ -z "$FINAL_ARTIFACT" ]; then
+              echo "ERROR: FINAL_ARTIFACT is empty!"
+              exit 1
+          fi
+
+          # Resolve the artifact path
+          ZIP_PATH="$(realpath "$FINAL_ARTIFACT")"
+
+          echo "Checking kernel artifact..."
+          echo "Artifact: $ZIP_PATH"
+
+          if [ ! -f "$ZIP_PATH" ]; then
+              echo "ERROR: Kernel ZIP does not exist!"
+              exit 1
+          fi
+
+          if [ ! -r "$ZIP_PATH" ]; then
+              echo "ERROR: Kernel ZIP is not readable!"
+              exit 1
+          fi
+
+          ls -lh "$ZIP_PATH"
+          file "$ZIP_PATH"
+
+          BUILD_END_TIME=$(date +%s)
+          DURATION_SEC=$((BUILD_END_TIME - BUILD_START_TIME))
+          export MIN=$((DURATION_SEC / 60))
+          export SEC=$((DURATION_SEC % 60))
+
+          # Generate emojified single Telegram caption with changelog
+          python3 .github/scripts/generate_telegram_caption.py
+
+          CAPTION=$(cat caption.txt)
+          EDITED=false
+
+          if [ -n "$BUILD_MSG_ID" ]; then
+            echo "Attempting to edit original trigger message ($BUILD_MSG_ID) with kernel artifact..."
+            MEDIA_JSON=$(python3 -c "import json; print(json.dumps({'type': 'document', 'media': 'attach://kernel_zip', 'caption': open('caption.txt').read(), 'parse_mode': 'HTML'}))")
+
+            EDIT_RESP=$(curl --silent --show-error \
+              --form-string "chat_id=${TG_CHAT}" \
+              --form-string "message_id=${BUILD_MSG_ID}" \
+              -F "media=${MEDIA_JSON};type=application/json" \
+              -F "kernel_zip=@${ZIP_PATH}" \
+              "https://api.telegram.org/bot${TG_TOKEN}/editMessageMedia" || true)
+
+            echo "Edit Response: $EDIT_RESP"
+            if echo "$EDIT_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+              EDITED=true
+              echo "Original message successfully edited with kernel artifact!"
+            else
+              echo "editMessageMedia could not edit the message directly, deleting initial message to avoid duplicate..."
+              curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/deleteMessage" \
+                --form-string "chat_id=${TG_CHAT}" \
+                --form-string "message_id=${BUILD_MSG_ID}" || true
+            fi
+          fi
+
+          if [ "$EDITED" != "true" ]; then
+            echo "Uploading $ZIP_PATH to Telegram via sendDocument..."
+            RESPONSE=$(curl --fail-with-body --silent --show-error \
+              --form-string "chat_id=${TG_CHAT}" \
+              -F "document=@${ZIP_PATH}" \
+              --form-string "caption=${CAPTION}" \
+              --form-string "parse_mode=HTML" \
+              "https://api.telegram.org/bot${TG_TOKEN}/sendDocument")
+
+            echo "Telegram Response: $RESPONSE"
+
+            if ! echo "$RESPONSE" | jq -e '.ok == true' >/dev/null; then
+              echo "ERROR: Telegram API rejected the upload!"
+              exit 1
+            fi
+          fi
+
+          echo "Kernel uploaded successfully in single message!"
+
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.KERNEL_NAME }}-${{ env.DEVICE_NAME }}-${{ env.BUILD_DATE }}
+          name: "${{ env.KERNEL_NAME }} for ${{ env.DEVICE_NAME }} (${{ env.BUILD_DATE }})"
+          body_path: changelog.txt
+          files: ${{ env.FINAL_ARTIFACT }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send Telegram Failure Notification
+        if: failure()
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ] || [ "$TG_TOKEN" = "YOUR_TELEGRAM_BOT_TOKEN" ]; then
+            echo "Telegram token or chat_id not configured."
+            exit 0
+          fi
+
+          TEXT="❌ <b>Kernel Build Failed!</b>"$'\n'$'\n'
+          TEXT+="⚡ <b>Kernel:</b> <code>${KERNEL_NAME}</code>"$'\n'
+          TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
+          TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${COMMIT_MSG})"$'\n'
+          TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
+          TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run Details</a>"
+
+          EDITED=false
+          if [ -n "$BUILD_MSG_ID" ]; then
+            RESP=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/editMessageText" \
+              --form-string "chat_id=${TG_CHAT}" \
+              --form-string "message_id=${BUILD_MSG_ID}" \
+              --form-string "parse_mode=HTML" \
+              --form-string "disable_web_page_preview=true" \
+              --form-string "text=${TEXT}" || true)
+            if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+              EDITED=true
+            fi
+          fi
+
+          if [ "$EDITED" != "true" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --form-string "chat_id=${TG_CHAT}" \
+              --form-string "parse_mode=HTML" \
+              --form-string "disable_web_page_preview=true" \
+              --form-string "text=${TEXT}" || true
+          fi
+
+          if [ -f "build.log" ]; then
+            tail -n 100 build.log > build_tail.log
+            curl -s \
+              --form-string "chat_id=${TG_CHAT}" \
+              -F "document=@build_tail.log" \
+              --form-string "caption=Build Error Log (tail 100 lines)" \
+              "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" || true
+          fi
+
+      - name: Upload Build Artifact to GitHub
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.KERNEL_NAME }}-${{ env.COMMIT_HASH }}
+          path: ${{ env.FINAL_ARTIFACT }}

@@ -569,6 +569,7 @@ endif
 # CC_VERSION_TEXT is referenced from Kconfig (so it needs export),
 # and from include/config/auto.conf.cmd to detect the compiler upgrade.
 CC_VERSION_TEXT = $(shell $(CC) --version 2>/dev/null | head -n 1 | sed 's/\#//g')
+LD_VERSION_TEXT = $(shell $(LD) -v 2>/dev/null | head -n 1)
 
 ifneq ($(findstring clang,$(CC_VERSION_TEXT)),)
 # Individual arch/{arch}/Makefiles should use -EL/-EB to set intended
@@ -614,7 +615,7 @@ ifdef config-build
 # KBUILD_DEFCONFIG may point out an alternative default configuration
 # used for 'make defconfig'
 include arch/$(SRCARCH)/Makefile
-export KBUILD_DEFCONFIG KBUILD_KCONFIG CC_VERSION_TEXT
+export KBUILD_DEFCONFIG KBUILD_KCONFIG CC_VERSION_TEXT LD_VERSION_TEXT
 
 config: outputmakefile scripts_basic FORCE
 	$(Q)$(MAKE) $(build)=scripts/kconfig $@
