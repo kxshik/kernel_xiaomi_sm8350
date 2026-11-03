@@ -16,7 +16,7 @@ size = html.escape(os.environ.get('FILE_SIZE', ''))
 md5 = html.escape(os.environ.get('MD5_SUM', ''))
 compiler = html.escape(os.environ.get('CLANG_VERSION', ''))
 repo = html.escape(os.environ.get('GITHUB_REPOSITORY', ''))
-sha = html.escape(os.environ.get('GITHUB_SHA', ''))
+sha = html.escape(os.environ.get('COMMIT_FULL_HASH', os.environ.get('GITHUB_SHA', '')))
 base = (
     f"✅ <b>Kernel Build Succeeded!</b>\n\n"
     f"⚡ <b>Kernel:</b> <code>{kernel}</code>\n"

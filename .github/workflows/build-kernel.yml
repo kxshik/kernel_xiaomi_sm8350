@@ -6,21 +6,28 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: 'Branch or ref to build (leave empty for current ref)'
+        required: false
+        default: ''
+        type: string
       send_status_message:
         description: 'Send start notification to Telegram'
         required: false
         default: true
         type: boolean
-  push:
-    branches:
-      - lineage-24.0-bakasu
-      - lineage-24.0
-      - main
-      - master
-    paths-ignore:
-      - 'README.md'
-      - '.github/**'
-      - 'telegram_config.json'
+  repository_dispatch:
+    types: [build-kernel, build]
+#  push:
+#    branches:
+#      - lineage-24.0-bakasu
+#      - lineage-24.0
+#      - main
+#      - master
+#    paths-ignore:
+#      - 'README.md'
+#      - '.github/**'
+#      - 'telegram_config.json'
 
 jobs:
   build:
@@ -31,6 +38,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.branch || github.event.client_payload.branch || github.ref }}
           fetch-depth: 25
           submodules: recursive
 
@@ -119,12 +127,13 @@ jobs:
       - name: Download Android Clang r614150
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          mkdir -p clang
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz"
-          echo "Downloading Clang r614150 from: $CLANG_URL"
-          curl -LSs "$CLANG_URL" -o clang.tar.gz
-          tar -xzf clang.tar.gz -C clang
-          rm -f clang.tar.gz
+          echo "Fetching Clang r614150 from Google prebuilts..."
+          git clone --depth=1 --filter=blob:none --sparse https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b main-kernel clang-repo
+          cd clang-repo
+          git sparse-checkout set clang-r614150
+          mv clang-r614150 "$GITHUB_WORKSPACE/clang"
+          cd "$GITHUB_WORKSPACE"
+          rm -rf clang-repo
 
       - name: Setup Clang Environment
         run: |
@@ -151,11 +160,22 @@ jobs:
           echo "Clang: $CLANG_VERSION"
           echo "LLD: $LLD_VERSION"
 
+          COMMIT_FULL_HASH=$(git rev-parse HEAD)
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
           COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
 
+          BRANCH_INPUT="${{ github.event.inputs.branch || github.event.client_payload.branch }}"
+          if [ -n "$BRANCH_INPUT" ]; then
+            BRANCH_NAME="${BRANCH_INPUT#refs/heads/}"
+          else
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          fi
+          if [ -z "$BRANCH_NAME" ] || [ "$BRANCH_NAME" = "HEAD" ]; then
+            BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+          fi
+
+          echo "COMMIT_FULL_HASH=$COMMIT_FULL_HASH" >> $GITHUB_ENV
           echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
           echo "COMMIT_MSG=$COMMIT_MSG" >> $GITHUB_ENV
           echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
@@ -180,7 +200,7 @@ jobs:
           TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
           TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
           TEXT+="🦇 <b>Host:</b> <code>${KBUILD_BUILD_USER}@${KBUILD_BUILD_HOST}</code>"$'\n'
-          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${COMMIT_FULL_HASH}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
           TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
           TEXT+="🛠️ <b>Compiler:</b> <code>${SAFE_CLANG_VERSION}</code>"$'\n'
           TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run</a>"
@@ -198,7 +218,7 @@ jobs:
 
       - name: Build Kernel
         run: |
-          set -e
+          set -eo pipefail
           mkdir -p out
 
           export ARCH=arm64
@@ -385,6 +405,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.KERNEL_NAME }}-${{ env.DEVICE_NAME }}-${{ env.BUILD_DATE }}
+          target_commitish: ${{ env.COMMIT_FULL_HASH }}
           name: "${{ env.KERNEL_NAME }} for ${{ env.DEVICE_NAME }} (${{ env.BUILD_DATE }})"
           body_path: changelog.txt
           files: ${{ env.FINAL_ARTIFACT }}
@@ -405,7 +426,7 @@ jobs:
           TEXT+="⚡ <b>Kernel:</b> <code>${KERNEL_NAME}</code>"$'\n'
           TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
           TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
-          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${COMMIT_FULL_HASH}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
           TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
           TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run Details</a>"
 
