@@ -3,21 +3,20 @@ import html
 import os
 import subprocess
 
-kernel = os.environ.get('KERNEL_NAME', '')
-device = os.environ.get('DEVICE_NAME', '')
-branch = os.environ.get('BRANCH_NAME', '')
-builder = os.environ.get('KBUILD_BUILD_USER', 'batman')
-host = os.environ.get('KBUILD_BUILD_HOST', 'darkknight')
-commit_hash = os.environ.get('COMMIT_HASH', '')
+kernel = html.escape(os.environ.get('KERNEL_NAME', ''))
+device = html.escape(os.environ.get('DEVICE_NAME', ''))
+branch = html.escape(os.environ.get('BRANCH_NAME', ''))
+builder = html.escape(os.environ.get('KBUILD_BUILD_USER', 'batman'))
+host = html.escape(os.environ.get('KBUILD_BUILD_HOST', 'darkknight'))
+commit_hash = html.escape(os.environ.get('COMMIT_HASH', ''))
 commit_msg = html.escape(os.environ.get('COMMIT_MSG', ''))
-min_dur = os.environ.get('MIN', '0')
-sec_dur = os.environ.get('SEC', '0')
-size = os.environ.get('FILE_SIZE', '')
-md5 = os.environ.get('MD5_SUM', '')
-compiler = os.environ.get('CLANG_VERSION', '')
-repo = os.environ.get('GITHUB_REPOSITORY', '')
-sha = os.environ.get('GITHUB_SHA', '')
-
+min_dur = html.escape(os.environ.get('MIN', '0'))
+sec_dur = html.escape(os.environ.get('SEC', '0'))
+size = html.escape(os.environ.get('FILE_SIZE', ''))
+md5 = html.escape(os.environ.get('MD5_SUM', ''))
+compiler = html.escape(os.environ.get('CLANG_VERSION', ''))
+repo = html.escape(os.environ.get('GITHUB_REPOSITORY', ''))
+sha = html.escape(os.environ.get('GITHUB_SHA', ''))
 base = (
     f"✅ <b>Kernel Build Succeeded!</b>\n\n"
     f"⚡ <b>Kernel:</b> <code>{kernel}</code>\n"

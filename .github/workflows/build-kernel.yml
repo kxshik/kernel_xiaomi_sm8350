@@ -19,7 +19,7 @@ on:
       - master
     paths-ignore:
       - 'README.md'
-      - '.github/workflows/**'
+      - '.github/**'
       - 'telegram_config.json'
 
 jobs:
@@ -155,16 +155,18 @@ jobs:
             exit 0
           fi
 
+          SAFE_COMMIT_MSG=$(python3 -c "import html, os; print(html.escape(os.environ.get('COMMIT_MSG', '')))")
+          SAFE_CLANG_VERSION=$(python3 -c "import html, os; print(html.escape(os.environ.get('CLANG_VERSION', '')))")
+
           TEXT="🚀 <b>Kernel Build Triggered!</b>"$'\n'$'\n'
           TEXT+="⚡ <b>Kernel:</b> <code>${KERNEL_NAME}</code>"$'\n'
           TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
           TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
           TEXT+="🦇 <b>Host:</b> <code>${KBUILD_BUILD_USER}@${KBUILD_BUILD_HOST}</code>"$'\n'
-          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${COMMIT_MSG})"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
           TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
-          TEXT+="🛠️ <b>Compiler:</b> <code>${CLANG_VERSION}</code>"$'\n'
+          TEXT+="🛠️ <b>Compiler:</b> <code>${SAFE_CLANG_VERSION}</code>"$'\n'
           TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run</a>"
-
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             --form-string "chat_id=${TG_CHAT}" \
             --form-string "parse_mode=HTML" \
@@ -316,49 +318,49 @@ jobs:
           python3 .github/scripts/generate_telegram_caption.py
 
           CAPTION=$(cat caption.txt)
-          EDITED=false
 
+          # Update initial trigger message if it exists to indicate build completion
           if [ -n "$BUILD_MSG_ID" ]; then
-            echo "Attempting to edit original trigger message ($BUILD_MSG_ID) with kernel artifact..."
-            MEDIA_JSON=$(python3 -c "import json; print(json.dumps({'type': 'document', 'media': 'attach://kernel_zip', 'caption': open('caption.txt').read(), 'parse_mode': 'HTML'}))")
-
-            EDIT_RESP=$(curl --silent --show-error \
+            echo "Updating original trigger message ($BUILD_MSG_ID) status..."
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/editMessageText" \
               --form-string "chat_id=${TG_CHAT}" \
               --form-string "message_id=${BUILD_MSG_ID}" \
-              -F "media=${MEDIA_JSON};type=application/json" \
-              -F "kernel_zip=@${ZIP_PATH}" \
-              "https://api.telegram.org/bot${TG_TOKEN}/editMessageMedia" || true)
-
-            echo "Edit Response: $EDIT_RESP"
-            if echo "$EDIT_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
-              EDITED=true
-              echo "Original message successfully edited with kernel artifact!"
-            else
-              echo "editMessageMedia could not edit the message directly, deleting initial message to avoid duplicate..."
-              curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/deleteMessage" \
-                --form-string "chat_id=${TG_CHAT}" \
-                --form-string "message_id=${BUILD_MSG_ID}" || true
-            fi
+              --form-string "parse_mode=HTML" \
+              --form-string "disable_web_page_preview=true" \
+              --form-string "text=🚀 <b>Kernel Build Finished!</b> in ${MIN}m ${SEC}s. Artifact uploaded below 👇" || true
           fi
 
-          if [ "$EDITED" != "true" ]; then
-            echo "Uploading $ZIP_PATH to Telegram via sendDocument..."
+          # Always send kernel artifact as a new document message with caption so Telegram triggers a notification
+          echo "Uploading $ZIP_PATH to Telegram via sendDocument..."
+          RESPONSE=$(curl --fail-with-body --silent --show-error \
+            --form-string "chat_id=${TG_CHAT}" \
+            -F "document=@${ZIP_PATH}" \
+            --form-string "caption=${CAPTION}" \
+            --form-string "parse_mode=HTML" \
+            "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" || true)
+
+          echo "Telegram Response: $RESPONSE"
+
+          if ! echo "$RESPONSE" | jq -e '.ok == true' >/dev/null 2>&1; then
+            echo "sendDocument with caption failed, sending caption text message and retrying document upload..."
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --form-string "chat_id=${TG_CHAT}" \
+              --form-string "parse_mode=HTML" \
+              --form-string "disable_web_page_preview=true" \
+              --form-string "text=${CAPTION}" || true
+
             RESPONSE=$(curl --fail-with-body --silent --show-error \
               --form-string "chat_id=${TG_CHAT}" \
               -F "document=@${ZIP_PATH}" \
-              --form-string "caption=${CAPTION}" \
-              --form-string "parse_mode=HTML" \
               "https://api.telegram.org/bot${TG_TOKEN}/sendDocument")
-
-            echo "Telegram Response: $RESPONSE"
-
-            if ! echo "$RESPONSE" | jq -e '.ok == true' >/dev/null; then
+            echo "Retry Telegram Response: $RESPONSE"
+            if ! echo "$RESPONSE" | jq -e '.ok == true' >/dev/null 2>&1; then
               echo "ERROR: Telegram API rejected the upload!"
               exit 1
             fi
           fi
 
-          echo "Kernel uploaded successfully in single message!"
+          echo "Kernel uploaded successfully to Telegram!"
 
       - name: Create GitHub Release
         if: success()
@@ -379,34 +381,32 @@ jobs:
             exit 0
           fi
 
+          SAFE_COMMIT_MSG=$(python3 -c "import html, os; print(html.escape(os.environ.get('COMMIT_MSG', '')))")
+
           TEXT="❌ <b>Kernel Build Failed!</b>"$'\n'$'\n'
           TEXT+="⚡ <b>Kernel:</b> <code>${KERNEL_NAME}</code>"$'\n'
           TEXT+="📱 <b>Device:</b> <code>${DEVICE_NAME}</code>"$'\n'
           TEXT+="🌿 <b>Branch:</b> <code>${BRANCH_NAME}</code>"$'\n'
-          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${COMMIT_MSG})"$'\n'
+          TEXT+="🔧 <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_HASH}</a> (${SAFE_COMMIT_MSG})"$'\n'
           TEXT+="👤 <b>Author:</b> ${COMMIT_AUTHOR}"$'\n'
           TEXT+="🔗 <b>Workflow:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Run Details</a>"
 
-          EDITED=false
+          # Update original trigger message if it exists
           if [ -n "$BUILD_MSG_ID" ]; then
-            RESP=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/editMessageText" \
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/editMessageText" \
               --form-string "chat_id=${TG_CHAT}" \
               --form-string "message_id=${BUILD_MSG_ID}" \
               --form-string "parse_mode=HTML" \
               --form-string "disable_web_page_preview=true" \
-              --form-string "text=${TEXT}" || true)
-            if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
-              EDITED=true
-            fi
+              --form-string "text=❌ <b>Kernel Build Failed!</b> Details posted below 👇" || true
           fi
 
-          if [ "$EDITED" != "true" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              --form-string "chat_id=${TG_CHAT}" \
-              --form-string "parse_mode=HTML" \
-              --form-string "disable_web_page_preview=true" \
-              --form-string "text=${TEXT}" || true
-          fi
+          # Always send a new message so Telegram notifies the chat
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --form-string "chat_id=${TG_CHAT}" \
+            --form-string "parse_mode=HTML" \
+            --form-string "disable_web_page_preview=true" \
+            --form-string "text=${TEXT}" || true
 
           if [ -f "build.log" ]; then
             tail -n 100 build.log > build_tail.log
