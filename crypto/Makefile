@@ -191,3 +191,10 @@ obj-$(CONFIG_ASYMMETRIC_KEY_TYPE) += asymmetric_keys/
 obj-$(CONFIG_CRYPTO_HASH_INFO) += hash_info.o
 crypto_simd-y := simd.o
 obj-$(CONFIG_CRYPTO_SIMD) += crypto_simd.o
+
+ifdef CONFIG_LLVM_POLLY
+CFLAGS_sha256_generic.o += $(CC_FLAGS_POLLY)
+CFLAGS_sha512_generic.o += $(CC_FLAGS_POLLY)
+CFLAGS_aes_generic.o += $(CC_FLAGS_POLLY)
+CFLAGS_chacha_generic.o += $(CC_FLAGS_POLLY)
+endif

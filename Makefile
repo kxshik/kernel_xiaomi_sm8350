@@ -986,6 +986,32 @@ KBUILD_CFLAGS	+= $(CC_FLAGS_CFI)
 export CC_FLAGS_CFI
 endif
 
+# Clang Polly polyhedral loop optimizations
+ifdef CONFIG_LLVM_POLLY
+CC_FLAGS_POLLY := $(call cc-option, -mllvm -polly) \
+                  $(call cc-option, -mllvm -polly-ast-use-context) \
+                  $(call cc-option, -mllvm -polly-invariant-load-hoisting)
+export CC_FLAGS_POLLY
+endif
+
+# Clang MLGO (Machine Learning Guided Optimizations)
+ifdef CONFIG_LLVM_MLGO
+MLGO_MODEL_PATH := $(strip $(CONFIG_LLVM_MLGO_MODEL_PATH))
+ifneq ($(MLGO_MODEL_PATH),)
+ifneq ($(wildcard $(MLGO_MODEL_PATH)),)
+CC_FLAGS_MLGO := -mllvm -enable-ml-inliner=development -mllvm -inliner-model-path=$(MLGO_MODEL_PATH)
+KBUILD_CFLAGS += $(call cc-option, $(CC_FLAGS_MLGO))
+else
+$(warning MLGO model path '$(MLGO_MODEL_PATH)' not found. Falling back to default heuristics.)
+endif
+else
+# Check if compiler bundles release AOT model without errors
+ifeq ($(shell $(CC) -Werror -O2 -mllvm -enable-ml-inliner=release -x c -c /dev/null -o /dev/null 2>/dev/null && echo y),y)
+KBUILD_CFLAGS += -mllvm -enable-ml-inliner=release
+endif
+endif
+endif
+
 # arch Makefile may override CC so keep this after arch Makefile is included
 NOSTDINC_FLAGS += -nostdinc -isystem $(shell $(CC) -print-file-name=include)
 

@@ -109,15 +109,25 @@ jobs:
             echo "::add-mask::$TG_TOKEN"
           fi
 
-      - name: Download ZyCromerZ Clang
+      - name: Cache Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: clang
+          key: clang-r614150-linux-x86
+
+      - name: Download Android Clang r614150
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p clang
-          CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261022-release/Clang-14.0.6-20261022.tar.gz"
-          echo "Downloading Clang from: $CLANG_URL"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz"
+          echo "Downloading Clang r614150 from: $CLANG_URL"
           curl -LSs "$CLANG_URL" -o clang.tar.gz
           tar -xzf clang.tar.gz -C clang
           rm -f clang.tar.gz
 
+      - name: Setup Clang Environment
+        run: |
           if [ -d "clang/bin" ]; then
             CLANG_DIR="$GITHUB_WORKSPACE/clang"
           else
@@ -132,7 +142,14 @@ jobs:
         run: |
           CLANG_FULL=$("${CLANG_DIR}/bin/clang" --version 2>/dev/null)
           CLANG_VERSION=$(echo "$CLANG_FULL" | head -n 1)
+          LLD_FULL=$("${CLANG_DIR}/bin/ld.lld" --version 2>/dev/null)
+          LLD_VERSION=$(echo "$LLD_FULL" | head -n 1)
           echo "CLANG_VERSION=$CLANG_VERSION" >> $GITHUB_ENV
+          echo "LLD_VERSION=$LLD_VERSION" >> $GITHUB_ENV
+
+          echo "=== Compiler & Linker Info ==="
+          echo "Clang: $CLANG_VERSION"
+          echo "LLD: $LLD_VERSION"
 
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
@@ -187,6 +204,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
+          export CXX=clang++
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
@@ -211,7 +229,7 @@ jobs:
           for CFG in $CONFIGS; do
             echo "===> Applying config: $CFG"
             make -j$(nproc --all) O=out ARCH=arm64 \
-              CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+              CC=clang CXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
               CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \
@@ -221,7 +239,7 @@ jobs:
 
           echo "===> Starting Kernel Compilation..."
           make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            CC=clang CXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \

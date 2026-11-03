@@ -653,6 +653,33 @@ config CFI_PERMISSIVE
 	  warning instead of a kernel panic. This option is useful for finding
 	  CFI violations during development.
 
+config LLVM_POLLY
+	bool "Enable Clang Polly loop optimizations"
+	depends on CC_IS_CLANG
+	help
+	  Enable Clang Polly loop optimizations for supported compilation targets.
+	  Polly performs polyhedral loop transformations to optimize memory access
+	  patterns, vectorization, and data locality. To maintain kernel stability,
+	  Polly is applied to suitable compute and data processing targets rather
+	  than globally across device drivers and synchronization primitives.
+
+config LLVM_MLGO
+	bool "Enable Clang MLGO (Machine Learning Guided Optimizations)"
+	depends on CC_IS_CLANG
+	help
+	  Enable Machine Learning Guided Optimizations in Clang (such as ML-driven
+	  inlining and register allocation). When model files are available,
+	  MLGO uses trained models instead of classical heuristics. If no model
+	  is available, standard heuristics are safely retained.
+
+config LLVM_MLGO_MODEL_PATH
+	string "Path to MLGO model directory"
+	depends on LLVM_MLGO
+	default ""
+	help
+	  Path to a valid MLGO model directory. If empty or invalid, the build
+	  safely falls back to default compiler heuristics without failing.
+
 config HAVE_ARCH_WITHIN_STACK_FRAMES
 	bool
 	help
