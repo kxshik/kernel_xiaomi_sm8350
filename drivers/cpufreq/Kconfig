@@ -206,6 +206,17 @@ config CPU_FREQ_GOV_SCHEDUTIL
 
 	  If in doubt, say N.
 
+config CPU_FREQ_GOV_VORPAL
+	tristate "'vorpal' cpufreq policy governor"
+	default y
+	depends on CPU_FREQ && SMP && CPU_FREQ_GOV_SCHEDUTIL
+	select CPU_FREQ_GOV_ATTR_SET
+	select IRQ_WORK
+	help
+	  Vorpal CPUFreq Governor v2.2-1 adapted for Snapdragon 888 (SM8350).
+	  Combines energy-aware scheduling, adaptive headroom, and gaming pacing.
+	  Includes 15-25ms evaluation and down-rate tuning.
+
 comment "CPU frequency scaling drivers"
 
 config CPUFREQ_DT
